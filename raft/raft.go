@@ -179,8 +179,9 @@ func (rn *raftNode) raftLoop() {
 			}
 
 			for _, entry := range rd.CommittedEntries {
-				rn.process(entry)
-				if entry.Type == raftpb.EntryConfChange {
+				if entry.Type == raftpb.EntryNormal {
+					rn.process(entry)
+				} else if entry.Type == raftpb.EntryConfChange {
 					var cc raftpb.ConfChange
 					cc.Unmarshal(entry.Data)
 
