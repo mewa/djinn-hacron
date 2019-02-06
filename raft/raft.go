@@ -32,7 +32,7 @@ type raftNode struct {
 	ticker *time.Ticker
 }
 
-func NewRaftNode(id int, peers []string) *raftNode {
+func NewRaftNode(id int, peers []string, heartbeat time.Duration) *raftNode {
 	raftPeers := make([]raft.Peer, len(peers))
 
 	for i := 0; i < len(peers); i++ {
@@ -52,8 +52,10 @@ func NewRaftNode(id int, peers []string) *raftNode {
 		w:     wait.New(),
 
 		log:  logger,
+		ticker: time.NewTicker(heartbeat),
 		done: make(chan struct{}),
 	}
+
 	rn.start()
 
 	return rn
@@ -162,11 +164,9 @@ func (rn *raftNode) processSoftState(softState *raft.SoftState) {
 }
 
 func (rn *raftNode) raftLoop() {
-	ticker := time.NewTicker(100 * time.Millisecond)
-
 	for {
 		select {
-		case <-ticker.C:
+		case <-rn.ticker.C:
 			rn.node.Tick()
 		case rd := <-rn.node.Ready():
 			rn.processSoftState(rd.SoftState)
