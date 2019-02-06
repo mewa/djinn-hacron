@@ -9,6 +9,8 @@ import (
 	t "github.com/mewa/djinn/raft/transport"
 	"go.uber.org/zap"
 	"time"
+	"errors"
+	"bytes"
 )
 
 type raftNode struct {
@@ -27,13 +29,17 @@ type raftNode struct {
 	done chan struct{}
 
 	log *zap.Logger
+	ticker *time.Ticker
 }
 
-func NewRaftNode(id int, peers []uint64) *raftNode {
+func NewRaftNode(id int, peers []string) *raftNode {
 	raftPeers := make([]raft.Peer, len(peers))
 
 	for i := 0; i < len(peers); i++ {
-		raftPeers[i] = raft.Peer{ID: peers[i]}
+		raftPeers[i] = raft.Peer{
+			ID: uint64(i) + 1,
+			Context: []byte(peers[i]),
+		}
 	}
 
 	logger, _ := zap.NewDevelopment()
@@ -88,8 +94,15 @@ func (rn *raftNode) configure(ctx context.Context, cc raftpb.ConfChange) error {
 	}
 
 	select {
-	case <-ch:
-		return nil
+	case val := <-ch:
+		var err error
+
+		switch val.(type) {
+		case error:
+			err = val.(error)
+		}
+
+		return err
 	case <-ctx.Done():
 		rn.w.Trigger(cc.ID, nil)
 		return ctx.Err()
@@ -98,30 +111,42 @@ func (rn *raftNode) configure(ctx context.Context, cc raftpb.ConfChange) error {
 	}
 }
 
-func (rn *raftNode) AddMember(id uint64) {
+func (rn *raftNode) AddMember(id uint64, url string) error {
 	err := rn.configure(context.TODO(), raftpb.ConfChange{
 		Type:   raftpb.ConfChangeAddNode,
 		NodeID: id,
+		Context: []byte(url),
 	})
 
-	rn.log.Info("Added member",
-		zap.Uint64("id", rn.id),
-		zap.Uint64("added_id", id),
-		zap.Error(err),
-	)
+	if err != nil {
+		rn.log.Info("attempted to add member",
+			zap.Uint64("id", rn.id),
+			zap.Uint64("added_id", id),
+			zap.Error(err),
+		)
+	} else {
+		rn.log.Info("added member",
+			zap.Uint64("id", rn.id),
+			zap.Uint64("added_id", id),
+		)
+	}
+
+	return err
 }
 
-func (rn *raftNode) RemoveMember(id uint64) {
+func (rn *raftNode) RemoveMember(id uint64) error {
+	// TODO: add checks for leadership
 	err := rn.configure(context.TODO(), raftpb.ConfChange{
 		Type:   raftpb.ConfChangeRemoveNode,
 		NodeID: id,
 	})
 
-	rn.log.Info("Removed member",
+	rn.log.Info("removed member",
 		zap.Uint64("id", rn.id),
 		zap.Uint64("removed_id", id),
 		zap.Error(err),
 	)
+	return err
 }
 
 func (rn *raftNode) Propose(val string) {
@@ -159,8 +184,12 @@ func (rn *raftNode) raftLoop() {
 					var cc raftpb.ConfChange
 					cc.Unmarshal(entry.Data)
 
-					rn.applyConfChange(cc)
-					rn.w.Trigger(cc.ID, struct{}{})
+					if err := rn.applyConfChange(cc); err == nil {
+						rn.w.Trigger(cc.ID, cc)
+					} else {
+						rn.w.Trigger(cc.ID, err)
+					}
+
 				}
 			}
 			rn.node.Advance()
@@ -184,8 +213,6 @@ func (rn *raftNode) saveToStorage(hardState raftpb.HardState, entries []raftpb.E
 }
 
 func (rn *raftNode) applyConfChange(cc raftpb.ConfChange) error {
-	rn.node.ApplyConfChange(cc)
-
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode:
 		rn.log.Info("Add node",
@@ -193,18 +220,47 @@ func (rn *raftNode) applyConfChange(cc raftpb.ConfChange) error {
 			zap.Uint64("added_id", cc.NodeID),
 		)
 
-		rn.transport.AddPeer(rn)
+		return rn.addPeer(cc)
 	case raftpb.ConfChangeRemoveNode:
 		rn.log.Info("Remove node",
 			zap.Uint64("id", rn.id),
 			zap.Uint64("removed_id", cc.NodeID),
 		)
-		if cc.NodeID == rn.id {
-			rn.log.Info("Removed self", zap.Uint64("id", rn.id))
-			rn.done <- struct{}{}
-			rn.transport.RemovePeer(rn)
+
+		return rn.removePeer(cc)
+	}
+	return nil
+}
+
+func (rn *raftNode) addPeer(cc raftpb.ConfChange) error {
+	for _, p := range rn.peers {
+		if bytes.Equal(p.Context, cc.Context) {
+			cc.NodeID = 0
+			break
 		}
 	}
+
+	rn.node.ApplyConfChange(cc)
+
+	if cc.NodeID == 0 {
+		return errors.New("Peer already exists")
+	}
+
+	rn.peers = append(rn.peers, raft.Peer{ID: cc.NodeID, Context: cc.Context})
+
+	return nil
+}
+
+func (rn *raftNode) removePeer(cc raftpb.ConfChange) error {
+	rn.node.ApplyConfChange(cc)
+
+	if cc.NodeID == rn.id {
+		rn.log.Info("Removed self", zap.Uint64("id", rn.id), zap.Uint64("leader", rn.leader))
+
+		rn.done <- struct{}{}
+		rn.transport.RemovePeer(rn)
+	}
+
 	return nil
 }
 
