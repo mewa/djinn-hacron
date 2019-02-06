@@ -13,7 +13,9 @@ import (
 
 type raftNode struct {
 	id    uint64
+
 	peers []raft.Peer
+	leader uint64
 
 	storage   *raft.MemoryStorage
 	transport t.Transport
@@ -65,7 +67,6 @@ func (rn *raftNode) start() {
 
 	rn.transport = t.NewTransport()
 	rn.transport.AddPeer(rn)
-
 
 	rn.storage = storage
 	rn.node = raft.StartNode(c, rn.peers)
@@ -127,6 +128,12 @@ func (rn *raftNode) Propose(val string) {
 	rn.node.Propose(context.TODO(), []byte(val))
 }
 
+func (rn *raftNode) processSoftState(softState *raft.SoftState) {
+	if softState == nil {
+		return
+	}
+
+	rn.leader = softState.Lead
 }
 
 func (rn *raftNode) raftLoop() {
@@ -137,6 +144,8 @@ func (rn *raftNode) raftLoop() {
 		case <-ticker.C:
 			rn.node.Tick()
 		case rd := <-rn.node.Ready():
+			rn.processSoftState(rd.SoftState)
+
 			rn.saveToStorage(rd.HardState, rd.Entries, rd.Snapshot)
 			rn.transport.Send(rd.Messages)
 
