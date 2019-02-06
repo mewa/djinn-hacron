@@ -277,10 +277,12 @@ func (rn *raftNode) processSnapshot(snap raftpb.Snapshot) {
 	rn.storage.ApplySnapshot(snap)
 }
 
+// Implements t.RaftNode
 func (rn *raftNode) Id() uint64 {
 	return rn.id
 }
 
+// Implements t.RaftNode
 func (rn *raftNode) Process(ctx context.Context, msg raftpb.Message) error {
 	return rn.node.Step(ctx, msg)
 }

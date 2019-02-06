@@ -36,6 +36,7 @@ func NewTransport() *localTransport {
 	return &local
 }
 
+// Implements Transport
 func (t *localTransport) AddPeer(peer RaftNode) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -43,6 +44,7 @@ func (t *localTransport) AddPeer(peer RaftNode) {
 	t.peers[peer.Id()] = peer
 }
 
+// Implements Transport
 func (t *localTransport) RemovePeer(peer RaftNode) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -50,6 +52,7 @@ func (t *localTransport) RemovePeer(peer RaftNode) {
 	delete(t.peers, peer.Id())
 }
 
+// Implements Transport
 func (t *localTransport) Send(msgs []raftpb.Message) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
