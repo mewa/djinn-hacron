@@ -11,6 +11,8 @@ import (
 	"time"
 	"errors"
 	"bytes"
+	m "github.com/mewa/djinn/raft/messages"
+	"github.com/golang/protobuf/proto"
 )
 
 type raftNode struct {
@@ -151,8 +153,35 @@ func (rn *raftNode) RemoveMember(id uint64) error {
 	return err
 }
 
-func (rn *raftNode) Propose(val string) {
-	rn.node.Propose(context.TODO(), []byte(val))
+func (rn *raftNode) Propose(data []byte) error {
+	ctx, _ := context.WithTimeout(context.TODO(), 5 * time.Second)
+
+	id := rn.idGen.Next()
+
+	payload, err := proto.Marshal(&m.Message{
+		Id: id,
+		Data: data,
+	})
+	if err != nil {
+		rn.log.Error("Could not serialize message", zap.Error(err))
+	}
+
+	ch := rn.w.Register(id)
+
+	if err := rn.node.Propose(ctx, payload); err != nil {
+		rn.w.Trigger(id, err)
+	}
+
+	select {
+	case v := <-ch:
+		switch v.(type) {
+		case error:
+			return v.(error)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (rn *raftNode) processSoftState(softState *raft.SoftState) {
@@ -271,6 +300,11 @@ func (rn *raftNode) process(entry raftpb.Entry) {
 		zap.Uint64("id", rn.id),
 		zap.Stringer("entry", &entry),
 	)
+
+	var msg m.Message
+	err := proto.Unmarshal(entry.Data, &msg)
+
+	rn.w.Trigger(msg.Id, msg)
 }
 
 func (rn *raftNode) processSnapshot(snap raftpb.Snapshot) {
