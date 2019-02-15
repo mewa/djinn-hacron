@@ -9,8 +9,6 @@ import (
 	t "github.com/mewa/djinn/raft/transport"
 	"go.uber.org/zap"
 	"time"
-	"errors"
-	"bytes"
 	m "github.com/mewa/djinn/raft/messages"
 	"github.com/golang/protobuf/proto"
 	"sync/atomic"
@@ -19,7 +17,7 @@ import (
 type raftNode struct {
 	id    uint64
 
-	peers []raft.Peer
+	peers *membership
 	leader uint64
 
 	storage   *raft.MemoryStorage
@@ -36,13 +34,14 @@ type raftNode struct {
 }
 
 func NewRaftNode(id int, peers []string, heartbeat time.Duration) *raftNode {
-	raftPeers := make([]raft.Peer, len(peers))
+	raftPeers := newMembership()
 
+	// TODO: change how peers are added and auto-assign new id
 	for i := 0; i < len(peers); i++ {
-		raftPeers[i] = raft.Peer{
+		raftPeers.addPeer(&raft.Peer{
 			ID: uint64(i) + 1,
 			Context: []byte(peers[i]),
-		}
+		})
 	}
 
 	logger, _ := zap.NewDevelopment()
@@ -80,7 +79,9 @@ func (rn *raftNode) start() {
 	rn.transport.AddPeer(rn)
 
 	rn.storage = storage
-	rn.node = raft.StartNode(c, rn.peers)
+
+	rn.node = raft.StartNode(c, rn.peers.peers())
+	rn.peers = newMembership()
 
 	go rn.raftLoop()
 }
@@ -117,30 +118,38 @@ func (rn *raftNode) configure(ctx context.Context, cc raftpb.ConfChange) error {
 }
 
 func (rn *raftNode) AddMember(id uint64, url string) error {
-	err := rn.configure(context.TODO(), raftpb.ConfChange{
+	for rn.GetLeader() == 0 {}
+
+	peer := rn.peers.getUrl([]byte(url))
+	ctx := context.TODO()
+	err := rn.configure(ctx, raftpb.ConfChange{
 		Type:   raftpb.ConfChangeAddNode,
 		NodeID: id,
 		Context: []byte(url),
 	})
 
 	if err != nil {
-		rn.log.Info("attempted to add member",
-			zap.Uint64("id", rn.id),
-			zap.Uint64("added_id", id),
-			zap.Error(err),
-		)
-	} else {
-		rn.log.Info("added member",
-			zap.Uint64("id", rn.id),
-			zap.Uint64("added_id", id),
-		)
+		return err
 	}
+
+	// We have just replaced this member with a new node
+	if peer != nil {
+		err = rn.RemoveMember(peer.ID)
+	}
+
+	rn.log.Info("add member",
+		zap.Uint64("id", rn.id),
+		zap.Uint64("member_id", id),
+		zap.Bool("success", err == nil),
+		zap.Error(err),
+	)
 
 	return err
 }
 
 func (rn *raftNode) RemoveMember(id uint64) error {
-	// TODO: add checks for leadership
+	for rn.GetLeader() == 0 {}
+
 	err := rn.configure(context.TODO(), raftpb.ConfChange{
 		Type:   raftpb.ConfChangeRemoveNode,
 		NodeID: id,
@@ -251,7 +260,7 @@ func (rn *raftNode) saveToStorage(hardState raftpb.HardState, entries []raftpb.E
 	}
 }
 
-func (rn *raftNode) applyConfChange(cc raftpb.ConfChange) error {
+func (rn *raftNode) applyConfChange(cc raftpb.ConfChange) {
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode:
 		rn.log.Info("Add node",
@@ -259,38 +268,30 @@ func (rn *raftNode) applyConfChange(cc raftpb.ConfChange) error {
 			zap.Uint64("added_id", cc.NodeID),
 		)
 
-		return rn.addPeer(cc)
+		rn.addPeer(cc)
 	case raftpb.ConfChangeRemoveNode:
 		rn.log.Info("Remove node",
 			zap.Uint64("id", rn.id),
 			zap.Uint64("removed_id", cc.NodeID),
 		)
 
-		return rn.removePeer(cc)
+		rn.removePeer(cc)
 	}
-	return nil
 }
 
-func (rn *raftNode) addPeer(cc raftpb.ConfChange) error {
-	for _, p := range rn.peers {
-		if bytes.Equal(p.Context, cc.Context) {
-			cc.NodeID = 0
-			break
-		}
-	}
-
+func (rn *raftNode) addPeer(cc raftpb.ConfChange) {
 	rn.node.ApplyConfChange(cc)
 
-	if cc.NodeID == 0 {
-		return errors.New("Peer already exists")
-	}
-
-	rn.peers = append(rn.peers, raft.Peer{ID: cc.NodeID, Context: cc.Context})
-
-	return nil
+	rn.peers.addPeer(&raft.Peer{ID: cc.NodeID, Context: cc.Context})
 }
 
-func (rn *raftNode) removePeer(cc raftpb.ConfChange) error {
+func (rn *raftNode) removePeer(cc raftpb.ConfChange) {
+	peer := rn.peers.getId(cc.NodeID)
+
+	if peer != nil {
+		rn.peers.removeId(cc.NodeID)
+	}
+
 	rn.node.ApplyConfChange(cc)
 
 	if cc.NodeID == rn.id {
@@ -299,8 +300,6 @@ func (rn *raftNode) removePeer(cc raftpb.ConfChange) error {
 		rn.done <- struct{}{}
 		rn.transport.RemovePeer(rn)
 	}
-
-	return nil
 }
 
 func (rn *raftNode) process(entry raftpb.Entry) {
