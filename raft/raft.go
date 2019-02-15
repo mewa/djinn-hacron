@@ -161,9 +161,10 @@ func (rn *raftNode) RemoveMember(id uint64) error {
 		NodeID: id,
 	})
 
-	rn.log.Info("removed member",
+	rn.log.Info("remove member",
 		zap.Uint64("id", rn.id),
-		zap.Uint64("removed_id", id),
+		zap.Uint64("member_id", id),
+		zap.Bool("success", err == nil),
 		zap.Error(err),
 	)
 	return err
@@ -179,7 +180,7 @@ func (rn *raftNode) Propose(data []byte) error {
 		Data: data,
 	})
 	if err != nil {
-		rn.log.Error("Could not serialize message", zap.Error(err))
+		rn.log.Error("could not serialize message", zap.Error(err))
 	}
 
 	ch := rn.w.Register(id)
@@ -268,16 +269,16 @@ func (rn *raftNode) saveToStorage(hardState raftpb.HardState, entries []raftpb.E
 func (rn *raftNode) applyConfChange(cc raftpb.ConfChange) {
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode:
-		rn.log.Info("Add node",
+		rn.log.Info("adding node",
 			zap.Uint64("id", rn.id),
-			zap.Uint64("added_id", cc.NodeID),
+			zap.Uint64("member_id", cc.NodeID),
 		)
 
 		rn.addPeer(cc)
 	case raftpb.ConfChangeRemoveNode:
-		rn.log.Info("Remove node",
+		rn.log.Info("removing node",
 			zap.Uint64("id", rn.id),
-			zap.Uint64("removed_id", cc.NodeID),
+			zap.Uint64("member_id", cc.NodeID),
 		)
 
 		rn.removePeer(cc)
@@ -306,9 +307,9 @@ func (rn *raftNode) removePeer(cc raftpb.ConfChange) {
 
 func (rn *raftNode) process(entry raftpb.Entry) {
 	// TODO: add logic
-	rn.log.Info("Raft entry",
+	rn.log.Info("raft entry",
 		zap.Uint64("id", rn.id),
-		zap.Stringer("entry", &entry),
+		zap.String("entry", raft.DescribeEntry(entry, nil)),
 	)
 
 	var msg m.Message
