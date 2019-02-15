@@ -87,7 +87,13 @@ func (rn *raftNode) start() {
 }
 
 func (rn *raftNode) Stop() {
+	rn.log.Info("stopping", zap.Uint64("id", rn.id))
+
 	rn.done <- struct{}{}
+	rn.transport.RemovePeer(rn)
+	rn.node.Stop()
+
+	rn.log.Info("stopped", zap.Uint64("id", rn.id))
 }
 
 func (rn *raftNode) configure(ctx context.Context, cc raftpb.ConfChange) error {
@@ -214,7 +220,7 @@ func (rn *raftNode) raftLoop() {
 	for {
 		select {
 		case <-rn.ticker.C:
-			rn.node.Tick()
+			rn.tick()
 		case rd := <-rn.node.Ready():
 			rn.processSoftState(rd.SoftState)
 
@@ -232,20 +238,19 @@ func (rn *raftNode) raftLoop() {
 					var cc raftpb.ConfChange
 					cc.Unmarshal(entry.Data)
 
-					if err := rn.applyConfChange(cc); err == nil {
-						rn.w.Trigger(cc.ID, cc)
-					} else {
-						rn.w.Trigger(cc.ID, err)
-					}
-
+					rn.applyConfChange(cc)
+					rn.w.Trigger(cc.ID, cc)
 				}
 			}
 			rn.node.Advance()
 		case <-rn.done:
-			rn.Stop()
 			return
 		}
 	}
+}
+
+func (rn *raftNode) tick() {
+	rn.node.Tick()
 }
 
 func (rn *raftNode) saveToStorage(hardState raftpb.HardState, entries []raftpb.Entry, snapshot raftpb.Snapshot) {
@@ -295,10 +300,7 @@ func (rn *raftNode) removePeer(cc raftpb.ConfChange) {
 	rn.node.ApplyConfChange(cc)
 
 	if cc.NodeID == rn.id {
-		rn.log.Info("Removed self", zap.Uint64("id", rn.id), zap.Uint64("leader", rn.leader))
-
-		rn.done <- struct{}{}
-		rn.transport.RemovePeer(rn)
+		rn.Stop()
 	}
 }
 
