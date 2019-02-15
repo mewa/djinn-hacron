@@ -12,6 +12,7 @@ import (
 	m "github.com/mewa/djinn/raft/messages"
 	"github.com/golang/protobuf/proto"
 	"sync/atomic"
+	"errors"
 )
 
 type raftNode struct {
@@ -127,6 +128,11 @@ func (rn *raftNode) AddMember(id uint64, url string) error {
 	for rn.GetLeader() == 0 {}
 
 	peer := rn.peers.getUrl([]byte(url))
+
+	if peer != nil && peer.ID == id {
+		return errors.New("Member already added")
+	}
+
 	ctx := context.TODO()
 	err := rn.configure(ctx, raftpb.ConfChange{
 		Type:   raftpb.ConfChangeAddNode,
