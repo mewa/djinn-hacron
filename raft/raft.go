@@ -13,6 +13,7 @@ import (
 	"bytes"
 	m "github.com/mewa/djinn/raft/messages"
 	"github.com/golang/protobuf/proto"
+	"sync/atomic"
 )
 
 type raftNode struct {
@@ -184,12 +185,20 @@ func (rn *raftNode) Propose(data []byte) error {
 	}
 }
 
+func (rn *raftNode) GetLeader() uint64 {
+	return atomic.LoadUint64(&rn.leader)
+}
+
+func (rn *raftNode) setLeader(lead uint64) {
+	atomic.StoreUint64(&rn.leader, lead)
+}
+
 func (rn *raftNode) processSoftState(softState *raft.SoftState) {
 	if softState == nil {
 		return
 	}
 
-	rn.leader = softState.Lead
+	rn.setLeader(softState.Lead)
 }
 
 func (rn *raftNode) raftLoop() {
