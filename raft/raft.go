@@ -28,10 +28,13 @@ type raftNode struct {
 	idGen *idutil.Generator
 	w     wait.Wait
 
+	heartbeat time.Duration
+	reqTimeout time.Duration
+	ticker *time.Ticker
+
 	done chan struct{}
 
 	log *zap.Logger
-	ticker *time.Ticker
 }
 
 func NewRaftNode(id int, peers []string, heartbeat time.Duration) *raftNode {
@@ -55,6 +58,8 @@ func NewRaftNode(id int, peers []string, heartbeat time.Duration) *raftNode {
 		w:     wait.New(),
 
 		log:  logger,
+
+		heartbeat: heartbeat,
 		ticker: time.NewTicker(heartbeat),
 		done: make(chan struct{}),
 	}
@@ -73,8 +78,10 @@ func (rn *raftNode) start() {
 		HeartbeatTick:   1,
 		Storage:         storage,
 		MaxSizePerMsg:   1024 * 1024,
-		MaxInflightMsgs: 256,
+		MaxInflightMsgs: 512,
 	}
+
+	rn.reqTimeout = 5 * time.Second + 2 * time.Duration(c.ElectionTick) * rn.heartbeat
 
 	rn.transport = t.NewTransport()
 	rn.transport.AddPeer(rn)
@@ -177,10 +184,9 @@ func (rn *raftNode) RemoveMember(id uint64) error {
 }
 
 func (rn *raftNode) Propose(data []byte) error {
-	ctx, _ := context.WithTimeout(context.TODO(), 5 * time.Second)
+	ctx, _ := context.WithTimeout(context.TODO(), rn.RequestTimeout())
 
 	id := rn.idGen.Next()
-
 	payload, err := proto.Marshal(&m.Message{
 		Id: id,
 		Data: data,
@@ -203,6 +209,7 @@ func (rn *raftNode) Propose(data []byte) error {
 		}
 		return nil
 	case <-ctx.Done():
+		rn.w.Trigger(id, nil)
 		return ctx.Err()
 	}
 }
@@ -326,6 +333,10 @@ func (rn *raftNode) process(entry raftpb.Entry) {
 
 func (rn *raftNode) processSnapshot(snap raftpb.Snapshot) {
 	rn.storage.ApplySnapshot(snap)
+}
+
+func (rn *raftNode) RequestTimeout() time.Duration {
+	return rn.reqTimeout
 }
 
 // Implements t.RaftNode
