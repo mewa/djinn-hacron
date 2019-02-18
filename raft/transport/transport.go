@@ -11,6 +11,7 @@ import (
 // Raft node has an id and is capable of handling raft messages
 type RaftNode interface {
 	Id() uint64
+	Address() string
 	Process(ctx context.Context, msg raftpb.Message) error
 }
 
@@ -18,6 +19,7 @@ type RaftNode interface {
 // that is needed to know is that it can accept peers and route
 // messages to them
 type Transport interface {
+	Join(endpoint string) error
 	Send(msgs []raftpb.Message)
 	AddPeer(peer RaftNode)
 	RemovePeer(peer RaftNode)
@@ -50,6 +52,12 @@ func (t *localTransport) RemovePeer(peer RaftNode) {
 	defer t.mu.Unlock()
 
 	delete(t.peers, peer.Id())
+}
+
+func (t *localTransport) Join(endpoint string) error {
+	if to, ok := t.peers[msg.To]; ok {
+		go to.Process(context.TODO(), msg)
+	}
 }
 
 // Implements Transport

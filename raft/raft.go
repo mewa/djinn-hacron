@@ -37,7 +37,7 @@ type raftNode struct {
 	log *zap.Logger
 }
 
-func NewRaftNode(id int, peers []string, heartbeat time.Duration) *raftNode {
+func NewRaftNode(url string, peers []string, heartbeat time.Duration) *raftNode {
 	raftPeers := newMembership()
 
 	// TODO: change how peers are added and auto-assign new id
@@ -316,6 +316,10 @@ func (rn *raftNode) removePeer(cc raftpb.ConfChange) {
 	if cc.NodeID == rn.id {
 		rn.Stop()
 	}
+}
+
+func (rn *raftNode) Peers() []raft.Peer {
+	return rn.peers.peers()
 }
 
 func (rn *raftNode) process(entry raftpb.Entry) {
